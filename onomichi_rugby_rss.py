@@ -3,8 +3,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime
-from email.utils import parsedate_to_datetime, format_datetime
+from email.utils import parsedate_to_datetime
 import hashlib
+import time
 
 
 # --------------------------------------------------
@@ -61,31 +62,125 @@ if OUTPUT.exists():
                     "guid": guid,
                 }
 
-    except Exception:
-        old_items = {}
+    except Exception as e:
+        print("既存RSS読み込みエラー:", e)
+        print("安全のため今回は更新しません。")
+        raise SystemExit(0)
+
+
+print("既存RSS件数:", len(old_items))
 
 
 # --------------------------------------------------
 # Google News RSS取得
+#
+# 503・タイムアウト等の場合は少し待って再試行。
+# それでも取得できなければ既存RSSを維持して正常終了。
 # --------------------------------------------------
 
 print("取得URL:")
 print(GOOGLE_NEWS_RSS)
 print()
 
-response = requests.get(
-    GOOGLE_NEWS_RSS,
-    headers=HEADERS,
-    timeout=30
+response = None
+
+MAX_RETRIES = 3
+
+for attempt in range(1, MAX_RETRIES + 1):
+
+    try:
+        print(
+            f"Google News取得 "
+            f"{attempt}/{MAX_RETRIES}"
+        )
+
+        response = requests.get(
+            GOOGLE_NEWS_RSS,
+            headers=HEADERS,
+            timeout=30
+        )
+
+        print(
+            "HTTP:",
+            response.status_code
+        )
+
+        response.raise_for_status()
+
+        # 正常取得できたので再試行終了
+        break
+
+    except requests.RequestException as e:
+
+        print(
+            "取得失敗:",
+            e
+        )
+
+        response = None
+
+        if attempt < MAX_RETRIES:
+            print(
+                "10秒待って再試行します。"
+            )
+            time.sleep(10)
+
+
+# --------------------------------------------------
+# 3回とも失敗した場合
+# --------------------------------------------------
+
+if response is None:
+
+    print()
+    print(
+        "Google Newsを取得できませんでした。"
+    )
+    print(
+        "今回はRSSを更新しません。"
+    )
+    print(
+        "既存の onomichi_rugby.xml を"
+        "そのまま維持します。"
+    )
+    print(
+        "次回の定期実行で再度確認します。"
+    )
+
+    # exit code 0 で正常終了
+    raise SystemExit(0)
+
+
+# --------------------------------------------------
+# Google News XML解析
+# --------------------------------------------------
+
+try:
+    root = ET.fromstring(
+        response.content
+    )
+
+except ET.ParseError as e:
+
+    print()
+    print(
+        "Google NewsのXML解析に失敗しました:",
+        e
+    )
+    print(
+        "今回はRSSを更新しません。"
+    )
+    print(
+        "既存の onomichi_rugby.xml を"
+        "そのまま維持します。"
+    )
+
+    raise SystemExit(0)
+
+
+google_items = root.findall(
+    "./channel/item"
 )
-
-print("HTTP:", response.status_code)
-
-response.raise_for_status()
-
-root = ET.fromstring(response.content)
-
-google_items = root.findall("./channel/item")
 
 print(
     "Google News取得件数:",
@@ -94,6 +189,31 @@ print(
 )
 
 print()
+
+
+# --------------------------------------------------
+# 0件だった場合
+#
+# Google News側の一時的な異常や
+# 仕様変更の可能性があるため、
+# 空RSSで既存XMLを上書きしない
+# --------------------------------------------------
+
+if len(google_items) == 0:
+
+    print(
+        "Google Newsの記事が0件でした。"
+    )
+    print(
+        "異常取得の可能性があるため、"
+        "今回はRSSを更新しません。"
+    )
+    print(
+        "既存の onomichi_rugby.xml を"
+        "そのまま維持します。"
+    )
+
+    raise SystemExit(0)
 
 
 # --------------------------------------------------
@@ -121,7 +241,9 @@ for item in google_items:
         ""
     ).strip()
 
-    source_element = item.find("source")
+    source_element = item.find(
+        "source"
+    )
 
     if source_element is not None:
         source = (
@@ -172,6 +294,26 @@ for item in google_items:
             "guid": guid,
         }
     )
+
+
+# --------------------------------------------------
+# 有効記事が0件なら更新しない
+# --------------------------------------------------
+
+if len(current_items) == 0:
+
+    print(
+        "有効な記事を1件も取得できませんでした。"
+    )
+    print(
+        "今回はRSSを更新しません。"
+    )
+    print(
+        "既存の onomichi_rugby.xml を"
+        "そのまま維持します。"
+    )
+
+    raise SystemExit(0)
 
 
 # --------------------------------------------------
@@ -303,9 +445,13 @@ for item in all_items:
 
 # --------------------------------------------------
 # XML保存
+#
+# ここまで正常に処理できた場合だけ上書きする
 # --------------------------------------------------
 
-tree = ET.ElementTree(rss)
+tree = ET.ElementTree(
+    rss
+)
 
 ET.indent(
     tree,
@@ -324,16 +470,19 @@ tree.write(
 # --------------------------------------------------
 
 print("RSS作成成功")
+
 print(
     "今回取得:",
     len(current_items),
     "件"
 )
+
 print(
     "RSS保存件数:",
     len(all_items),
     "件"
 )
+
 print(
     "保存先:",
     OUTPUT
@@ -341,6 +490,7 @@ print(
 
 print()
 print("取得記事:")
+
 
 for i, item in enumerate(
     current_items,
