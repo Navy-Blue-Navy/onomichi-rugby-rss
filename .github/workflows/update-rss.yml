@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
 
   schedule:
-    # 1時間ごと（毎時15分）
-    - cron: "15 * * * *"
+    # 2時間ごと
+    - cron: "17 */2 * * *"
 
 permissions:
   contents: write
